@@ -13,9 +13,20 @@
 		   inside a viewport, performs a Katara-style waterbending pose with
 		   real water particles orbiting and streaming between the hands
 		   (Avatar: The Last Airbender intro homage)
-		6. Creator credit screen
-		7. Logo reveal
-		8. Cleanup -> player gains control
+		6. LIGHTNINGBENDING SHOWCASE — same live-avatar viewport technique,
+		   this time an Azula-style two-finger lightning generation pose
+		   (side-on gather -> crackling charge at the fingertips -> a
+		   straight-arm thrust release that fires a jagged lightning bolt
+		   with a hard screen flash)
+		7. Creator credit screen
+		8. Logo reveal
+		9. Cleanup of the cinematic overlay, then a persistent POWER
+		   SELECTOR HUD fades in at the bottom of the screen -- a circular
+		   dock of the 4 elements. WATER and LIGHTNING are live: clicking
+		   one makes the player's REAL character (not a clone) perform
+		   that element's signature bending move, in-world, with the same
+		   particles/bolt effects as the showcase above. FIRE and EARTH
+		   are shown locked ("SOON") until their own showcases are built.
 
 	v4 CHANGELOG:
 	- Root cause of the "everything is stacked on top of each other"
@@ -66,6 +77,36 @@
 	  waterbending/credit/logo) is run through a `runPhase` wrapper that
 	  pcalls it and logs+continues on error, so one broken phase can
 	  never again take the rest of the intro down with it.
+
+	v6 CHANGELOG (adds the real Lightningbending showcase + the
+	persistent power selector, per creator feedback that the intro
+	"didn't actually show anything" for lightning and needed to end in
+	something the player keeps, not just close):
+	- Added a full LIGHTNINGBENDING SHOWCASE (mirrors the waterbending
+	  showcase's live-avatar viewport technique) built around the same
+	  reference-clip beat-matching approach, this time against Azula's
+	  lightning generation: side-on gathering stance -> two-finger charge
+	  at the chest with crackling spark emitters and a jittering energy
+	  arc between the palms -> a straight-arm thrust release that fires
+	  a real jagged Beam-based lightning bolt, a bright flash light, and
+	  a full-screen flash -> frozen fingers-extended hero pose.
+	- The intro no longer ends by just closing. `screenGui:Destroy()`
+	  still runs (the cinematic overlay itself is cleaned up exactly as
+	  before), but a SEPARATE, persistent `PowerSelectorHud` ScreenGui
+	  now fades in immediately after -- a circular dock of the 4 element
+	  icons at the bottom of the screen. This is intentionally its own
+	  GUI object (not a child of the intro's `screenGui`) specifically so
+	  destroying the intro can never take it down too.
+	- WATER and LIGHTNING slots in that dock are live: clicking one runs
+	  the same pose-and-effects sequence as the showcases above, but on
+	  the player's ACTUAL character in the world (briefly zeroing
+	  WalkSpeed/disabling jump so the pose reads cleanly, then restoring
+	  both and tweening every joint back to its captured original C0
+	  when the cast ends) instead of a cloned viewport avatar. FIRE and
+	  EARTH are drawn dimmed with a "SOON" tag and a locked-shake instead
+	  of a working cast, since only water/lightning have a designed move
+	  so far -- see POWER_MOVES for where the 2nd/3rd move per element
+	  and the fire/earth showcases plug in later.
 ]]
 
 local Players = game:GetService("Players")
@@ -970,15 +1011,11 @@ local function runElementCard(name: string, color: Color3)
 	container:Destroy()
 end
 
-local function runElementsIntro()
-	runElementCard("WATER", COLORS.Water)
-	task.wait(1.2)
-	runElementCard("LIGHTNING", COLORS.Lightning)
-	task.wait(1.2)
-	runElementCard("FIRE", COLORS.Fire)
-	task.wait(1.2)
-	runElementCard("EARTH", COLORS.Earth)
-end
+-- NOTE: element title cards are no longer batched through a single
+-- "run all four" function. WATER and LIGHTNING now each get their own
+-- full showcase immediately after their card (see PHASE 4 / PHASE 4b
+-- below), so the master sequence interleaves card -> showcase -> card ->
+-- showcase -> plain card -> plain card directly instead.
 
 -- ============================================================
 -- PHASE 4: WATERBENDING SHOWCASE
@@ -1561,6 +1598,480 @@ local function runWaterbendingShowcase()
 end
 
 -- ============================================================
+-- LIGHTNING BENDING EFFECTS (Azula-style generation + release)
+--
+-- Tuned very differently from the water effects above on purpose: small,
+-- fast, near-instant particles instead of slow flowing droplets, and a
+-- Beam-based bolt whose curve handles get randomized every frame for its
+-- short lifetime -- that per-frame jitter is what actually reads as a
+-- jagged "crack" of lightning instead of a smooth glowing line.
+-- ============================================================
+
+local function createSparkEmitter(parent, color: Color3)
+	local attachment = Instance.new("Attachment")
+	attachment.Name = "SparkAttach"
+	attachment.Parent = parent
+
+	local emitter = Instance.new("ParticleEmitter")
+	emitter.Name = "SparkParticles"
+	emitter.Texture = "rbxasset://textures/particles/sparkles_main.dds"
+	emitter.Color = ColorSequence.new(Color3.new(1, 1, 1), color)
+	emitter.Size = NumberSequence.new({
+		NumberSequenceKeypoint.new(0, 0.08),
+		NumberSequenceKeypoint.new(0.3, 0.16),
+		NumberSequenceKeypoint.new(1, 0.01),
+	})
+	emitter.Transparency = NumberSequence.new({
+		NumberSequenceKeypoint.new(0, 0.1),
+		NumberSequenceKeypoint.new(0.6, 0.4),
+		NumberSequenceKeypoint.new(1, 1),
+	})
+	emitter.Lifetime = NumberRange.new(0.12, 0.28)
+	emitter.Rate = 90
+	emitter.Speed = NumberRange.new(4, 9)
+	emitter.SpreadAngle = Vector2.new(180, 180)
+	emitter.Rotation = NumberRange.new(0, 360)
+	emitter.RotSpeed = NumberRange.new(-400, 400)
+	emitter.LightEmission = 1
+	emitter.LightInfluence = 0
+	emitter.Acceleration = Vector3.new(0, 0, 0)
+	emitter.Drag = 6
+	emitter.Parent = attachment
+
+	return attachment, emitter
+end
+
+-- A short, chaotic arc of energy dancing between the two hands while the
+-- charge builds. Same Beam instance the whole time; a Heartbeat loop
+-- (started by the caller) randomizes CurveSize0/1 every frame to fake the
+-- crackle instead of drawing a static line.
+local function createCrackleArc(attachment0: Attachment?, attachment1: Attachment?, color: Color3): Beam?
+	if not attachment0 or not attachment1 then
+		return nil
+	end
+	local beam = Instance.new("Beam")
+	beam.Attachment0 = attachment0
+	beam.Attachment1 = attachment1
+	beam.Width0 = 0.12
+	beam.Width1 = 0.08
+	beam.Color = ColorSequence.new(Color3.new(1, 1, 1), color)
+	beam.Transparency = NumberSequence.new({
+		NumberSequenceKeypoint.new(0, 0.2),
+		NumberSequenceKeypoint.new(1, 0.35),
+	})
+	beam.LightEmission = 1
+	beam.Segments = 12
+	beam.FaceCamera = true
+	beam.Enabled = false
+	beam.Parent = attachment0
+	return beam
+end
+
+-- The hero release bolt: fires from the casting hand to a fixed point out
+-- in front of the character, jittering its curve handles hard and fast
+-- for a short lifetime, then a bright light pop and it's gone -- the
+-- "crack" beat the whole sequence builds to. `anchorModel` is whatever the
+-- bolt's temporary target part should be parented under (the showcase's
+-- WorldModel in the viewport case, or the live character in the real-cast
+-- case) so it always renders in the right 3D scene.
+local function fireLightningBolt(handPart: Instance, rootPart: BasePart, anchorModel: Instance, color: Color3)
+	if not handPart or not rootPart then
+		return
+	end
+
+	local originAttach = Instance.new("Attachment")
+	originAttach.Position = Vector3.new(0, -0.15, 0)
+	originAttach.Parent = handPart
+
+	local targetPart = Instance.new("Part")
+	targetPart.Name = "LightningBoltTarget"
+	targetPart.Size = Vector3.new(0.1, 0.1, 0.1)
+	targetPart.Transparency = 1
+	targetPart.CanCollide = false
+	targetPart.CanQuery = false
+	targetPart.Anchored = true
+	targetPart.Massless = true
+	targetPart.CFrame = rootPart.CFrame * CFrame.new(0.4, 1.3, -13)
+	targetPart.Parent = anchorModel
+
+	local targetAttach = Instance.new("Attachment")
+	targetAttach.Parent = targetPart
+
+	local beam = Instance.new("Beam")
+	beam.Attachment0 = originAttach
+	beam.Attachment1 = targetAttach
+	beam.Width0 = 0.3
+	beam.Width1 = 0.05
+	beam.Color = ColorSequence.new(Color3.new(1, 1, 1), color)
+	beam.Transparency = NumberSequence.new({
+		NumberSequenceKeypoint.new(0, 0.05),
+		NumberSequenceKeypoint.new(1, 0.3),
+	})
+	beam.LightEmission = 1
+	beam.Segments = 30
+	beam.FaceCamera = true
+	beam.Parent = originAttach
+
+	local flash = Instance.new("PointLight")
+	flash.Color = color
+	flash.Range = 30
+	flash.Brightness = 8
+	flash.Parent = targetPart
+
+	local elapsed = 0
+	local duration = 0.22
+	local conn
+	conn = RunService.Heartbeat:Connect(function(dt)
+		elapsed += dt
+		if elapsed >= duration or not beam.Parent then
+			if conn then conn:Disconnect() end
+			originAttach:Destroy()
+			targetPart:Destroy()
+			return
+		end
+		beam.CurveSize0 = (math.random() - 0.5) * 4
+		beam.CurveSize1 = (math.random() - 0.5) * 4
+		flash.Brightness = 8 * (1 - elapsed / duration)
+	end)
+end
+
+-- Full-screen white-hot flash for the exact instant the bolt releases --
+-- the hard light "pop" the reference clip sells alongside the particles,
+-- not a substitute for them.
+local function screenFlash(parent: Instance, color: Color3)
+	local flash = Instance.new("Frame")
+	flash.Name = "LightningFlash"
+	flash.Size = UDim2.fromScale(1, 1)
+	flash.BackgroundColor3 = color:Lerp(Color3.new(1, 1, 1), 0.7)
+	flash.BackgroundTransparency = 0.15
+	flash.ZIndex = 50
+	flash.Parent = parent
+	tween(flash, 0.35, { BackgroundTransparency = 1 })
+	task.delay(0.4, function()
+		flash:Destroy()
+	end)
+end
+
+-- ============================================================
+-- PHASE 4b: LIGHTNINGBENDING SHOWCASE
+--
+-- Same live-avatar viewport technique as the waterbending showcase above
+-- (clone the player's actual character, detect R15/R6, animate whichever
+-- joints that rig has), this time matched against Azula's lightning
+-- generation instead of Katara's waterbending:
+--   Beat 0: idle silhouette, arms relaxed.
+--   Beat 1: side-on gathering stance -- both arms sweep out in opposite
+--           arcs as the torso turns side-on, the classic Azula "drawing
+--           power in" opening.
+--   Beat 2: two fingers brought together at the chest, the other hand
+--           pulled back for support -- energy starts crackling between
+--           the palms here (spark emitters + a jittering arc turn on).
+--   Beat 3: the épico release -- torso snaps forward, the lead arm jabs
+--           to full extension, and the instant it locks straight a real
+--           jagged lightning bolt fires out from the fingertips with a
+--           hard screen flash.
+--   Beat 4: frozen, arm still locked out, fingers pointed at the strike,
+--           faint residual sparks fizzling off the fingertips -- the
+--           hero freeze-frame the sequence holds on.
+-- ============================================================
+
+local function runLightningbendingShowcase()
+	local character = localPlayer.Character
+	if not character then
+		local waited = 0
+		local conn
+		conn = localPlayer.CharacterAdded:Connect(function(newCharacter)
+			character = newCharacter
+		end)
+		while not character and waited < 8 do
+			task.wait(0.1)
+			waited += 0.1
+		end
+		if conn then
+			conn:Disconnect()
+		end
+	end
+	if not character then
+		return
+	end
+	local humanoid = character:WaitForChild("Humanoid", 5)
+	if not humanoid then
+		return
+	end
+
+	local container: Frame? = nil
+	local displayModel: Model? = nil
+
+	local ok, err = pcall(function()
+	container = Instance.new("Frame")
+	container.Name = "LightningbendingShowcase"
+	container.Size = UDim2.fromScale(1, 1)
+	container.BackgroundTransparency = 1
+	container.ZIndex = 5
+	container.Parent = backdrop
+
+	local glow = Instance.new("Frame")
+	glow.Size = UDim2.fromScale(1, 0.42)
+	glow.Position = UDim2.fromScale(0, 0.3)
+	glow.BackgroundColor3 = COLORS.Lightning
+	glow.BackgroundTransparency = 1
+	glow.ZIndex = 2
+	glow.Parent = container
+
+	local elementLabel = makeLabel({
+		Parent = container,
+		Text = "LIGHTNING",
+		Font = FONT_TITLE,
+		TextColor3 = COLORS.Lightning,
+		Size = UDim2.fromScale(0.9, 0.1),
+		Position = UDim2.fromScale(0.05, 0.08),
+		Constrain = true,
+		MaxTextSize = 70,
+		TextTransparency = 1,
+	})
+
+	local viewport = Instance.new("ViewportFrame")
+	viewport.Name = "AvatarViewport"
+	viewport.Size = UDim2.fromScale(0.7, 0.58)
+	viewport.Position = UDim2.fromScale(0.15, 0.2)
+	viewport.BackgroundTransparency = 1
+	viewport.ZIndex = 3
+	viewport.Parent = container
+
+	local vpCamera = Instance.new("Camera")
+	vpCamera.FieldOfView = 45
+	viewport.CurrentCamera = vpCamera
+	vpCamera.Parent = viewport
+
+	-- Same lighting fix as the waterbending showcase: a ViewportFrame
+	-- does NOT inherit the game's Lighting, so Ambient/LightColor must be
+	-- set explicitly or the clone renders as a black silhouette.
+	viewport.Ambient = Color3.fromRGB(120, 115, 140)
+	viewport.LightColor = Color3.fromRGB(230, 210, 255)
+	viewport.LightDirection = Vector3.new(-0.4, -1, -0.3)
+
+	local worldModel = Instance.new("WorldModel")
+	worldModel.Parent = viewport
+
+	displayModel = character:Clone()
+	displayModel.Name = "AvatarDisplay"
+
+	for _, obj in ipairs(displayModel:GetDescendants()) do
+		if obj:IsA("Script") or obj:IsA("LocalScript") then
+			obj:Destroy()
+		end
+	end
+
+	local displayHumanoid = displayModel:FindFirstChildOfClass("Humanoid")
+	if displayHumanoid then
+		displayHumanoid.PlatformStand = true
+		displayHumanoid.DisplayDistanceType = Enum.HumanoidDisplayDistanceType.None
+	end
+
+	local rootPart = displayModel:FindFirstChild("HumanoidRootPart")
+	displayModel.Parent = worldModel
+
+	if rootPart then
+		rootPart.Anchored = true
+		rootPart.CFrame = CFrame.new(0, 0, 0)
+	end
+
+	local keyLight = Instance.new("PointLight")
+	keyLight.Parent = rootPart or worldModel
+	keyLight.Range = 20
+	keyLight.Brightness = 2
+	keyLight.Color = COLORS.Lightning
+
+	local function frameCamera()
+		if not rootPart then
+			return
+		end
+		local focusPoint = rootPart.Position + Vector3.new(0, 1.2, 0)
+		local camPos = focusPoint + Vector3.new(0, 0.2, 6.5)
+		vpCamera.CFrame = CFrame.lookAt(camPos, focusPoint)
+	end
+	frameCamera()
+
+	local function cameraShot(camOffset: Vector3, focusOffset: Vector3, duration: number)
+		if not rootPart then
+			return
+		end
+		local focusPoint = rootPart.Position + focusOffset
+		local camPos = rootPart.Position + camOffset
+		local targetCFrame = CFrame.lookAt(camPos, focusPoint)
+		TweenService:Create(vpCamera, TweenInfo.new(duration, Enum.EasingStyle.Sine, Enum.EasingDirection.InOut), { CFrame = targetCFrame }):Play()
+	end
+
+	local joints = getBendingJoints(displayModel)
+
+	local rightHandPart = getHandAttachPart(displayModel, "Right")
+	local leftHandPart = getHandAttachPart(displayModel, "Left")
+
+	local rightAttach, rightEmitter
+	local leftAttach, leftEmitter
+	if rightHandPart then
+		rightAttach, rightEmitter = createSparkEmitter(rightHandPart, COLORS.Lightning)
+		rightEmitter.Enabled = false
+	end
+	if leftHandPart then
+		leftAttach, leftEmitter = createSparkEmitter(leftHandPart, COLORS.Lightning)
+		leftEmitter.Enabled = false
+	end
+
+	local crackleArc = createCrackleArc(rightAttach, leftAttach, COLORS.Lightning)
+
+	local caption = makeLabel({
+		Parent = container,
+		Text = "GENERATE THE STORM",
+		Font = FONT_SUBTITLE,
+		TextColor3 = COLORS.TextDim,
+		Size = UDim2.fromScale(0.8, 0.05),
+		Position = UDim2.fromScale(0.1, 0.86),
+		Constrain = true,
+		MaxTextSize = 26,
+		TextTransparency = 1,
+	})
+
+	tween(glow, 1, { BackgroundTransparency = 0.85 })
+	tween(elementLabel, 1, { TextTransparency = 0 })
+	tween(caption, 1, { TextTransparency = 0.3 })
+	task.wait(0.4)
+
+	if joints then
+		local originals = {}
+		for jointName, motor in pairs(joints) do
+			originals[jointName] = motor.C0
+		end
+
+		local function poseBody(targets, duration: number)
+			local info = TweenInfo.new(duration, Enum.EasingStyle.Sine, Enum.EasingDirection.InOut)
+			for jointName, offsetCFrame in pairs(targets) do
+				local motor = joints[jointName]
+				if motor then
+					TweenService:Create(motor, info, { C0 = originals[jointName] * offsetCFrame }):Play()
+				end
+			end
+		end
+
+		-- BEAT 0: idle stance, brief hold.
+		task.wait(0.3)
+
+		-- BEAT 1: side-on horse stance -- both arms sweep out and up in
+		-- opposite circular arcs, drawing power in, torso twists side-on.
+		poseBody({
+			RightShoulder = CFrame.Angles(math.rad(-70), math.rad(20), math.rad(-40)),
+			LeftShoulder = CFrame.Angles(math.rad(-40), math.rad(-10), math.rad(50)),
+			Waist = CFrame.Angles(0, math.rad(18), 0),
+			RightHip = CFrame.Angles(math.rad(-10), math.rad(15), 0),
+			LeftHip = CFrame.Angles(math.rad(5), math.rad(15), 0),
+		}, 0.6)
+		task.wait(0.65)
+
+		-- BEAT 2: two fingers together at the chest, other hand pulled
+		-- back for support -- energy crackles and gathers between the
+		-- palms here.
+		poseBody({
+			RightShoulder = CFrame.Angles(math.rad(-15), math.rad(10), math.rad(-95)),
+			LeftShoulder = CFrame.Angles(math.rad(80), math.rad(-15), math.rad(15)),
+			Waist = CFrame.Angles(math.rad(-5), math.rad(25), 0),
+		}, 0.7)
+		if rightEmitter then rightEmitter.Enabled = true end
+		if leftEmitter then leftEmitter.Enabled = true end
+		if crackleArc then crackleArc.Enabled = true end
+		cameraShot(Vector3.new(0.9, 0.5, 5.6), Vector3.new(0.2, 1.4, 0), 0.9)
+		task.wait(0.5)
+
+		-- Crackle jitter loop while the charge holds -- randomizing the
+		-- arc's curve handles every frame is what sells "unstable energy"
+		-- instead of a static line between the hands.
+		local crackling = true
+		local crackleConn
+		if crackleArc then
+			crackleConn = RunService.Heartbeat:Connect(function()
+				if not crackling or not crackleArc.Parent then
+					if crackleConn then crackleConn:Disconnect() end
+					return
+				end
+				crackleArc.CurveSize0 = (math.random() - 0.5) * 1.2
+				crackleArc.CurveSize1 = (math.random() - 0.5) * 1.2
+			end)
+		end
+		task.wait(0.55)
+		crackling = false
+		if crackleArc then crackleArc.Enabled = false end
+
+		-- BEAT 3 (the épico release): torso snaps forward, the lead arm
+		-- jabs straight out to full extension -- the bolt fires the
+		-- instant the arm locks, which is the "crack" beat the whole
+		-- showcase builds to.
+		poseBody({
+			RightShoulder = CFrame.Angles(math.rad(-5), 0, math.rad(-88)),
+			LeftShoulder = CFrame.Angles(math.rad(60), math.rad(20), math.rad(65)),
+			Waist = CFrame.Angles(math.rad(10), math.rad(-20), 0),
+			RightHip = CFrame.Angles(math.rad(-30), math.rad(-10), 0),
+			LeftHip = CFrame.Angles(math.rad(15), math.rad(10), 0),
+			RightKnee = CFrame.Angles(math.rad(35), 0, 0),
+		}, 0.3)
+		cameraShot(Vector3.new(1.4, 0.05, 5.0), Vector3.new(0.3, 1.1, 0), 0.5)
+		task.wait(0.3)
+
+		if rightEmitter then rightEmitter.Enabled = false end
+		if leftEmitter then leftEmitter.Enabled = false end
+		if rightHandPart and rootPart then
+			fireLightningBolt(rightHandPart, rootPart, worldModel, COLORS.Lightning)
+		end
+		screenFlash(container, COLORS.Lightning)
+		task.wait(0.2)
+
+		-- BEAT 4 (final ref pose): frozen with the arm locked straight
+		-- out and fingers pointed at the strike, faint residual sparks
+		-- fizzling off the fingertips -- the hero freeze-frame.
+		if rightEmitter then
+			rightEmitter.Enabled = true
+			rightEmitter.Rate = 20
+		end
+		cameraShot(Vector3.new(0.3, -0.1, 4.2), Vector3.new(0.15, 1.0, 0), 0.6)
+		task.wait(1.5)
+	else
+		-- Fallback: no rig joints found at all -- just hold the effects
+		-- on for a beat so the phase still reads instead of erroring out.
+		if rightEmitter then rightEmitter.Enabled = true end
+		if leftEmitter then leftEmitter.Enabled = true end
+		if rightHandPart and rootPart then
+			fireLightningBolt(rightHandPart, rootPart, worldModel, COLORS.Lightning)
+		end
+		screenFlash(container, COLORS.Lightning)
+		task.wait(3.2)
+	end
+
+	if rightEmitter then rightEmitter.Enabled = false end
+	if leftEmitter then leftEmitter.Enabled = false end
+	if crackleArc then crackleArc.Enabled = false end
+
+	tween(caption, 0.6, { TextTransparency = 1 })
+	tween(elementLabel, 0.6, { TextTransparency = 1 })
+	tween(glow, 0.6, { BackgroundTransparency = 1 })
+
+	task.wait(0.65)
+	end) -- end pcall
+
+	if not ok then
+		warn("[IntroSequenceClient] Lightningbending showcase hit an error and was skipped:", err)
+	end
+
+	-- Cleanup always runs, whether the showcase finished cleanly or hit
+	-- an error partway through -- this guarantees the rest of the intro
+	-- (creator credit, logo) is never left blocked behind a broken
+	-- LIGHTNING showcase.
+	if displayModel then
+		displayModel:Destroy()
+	end
+	if container then
+		container:Destroy()
+	end
+end
+
+-- ============================================================
 -- PHASE 5: CREATOR CREDIT
 -- ============================================================
 
@@ -1697,6 +2208,490 @@ local function runLogoScreen()
 end
 
 -- ============================================================
+-- PHASE 7: PERSISTENT POWER SELECTOR HUD
+--
+-- Lives in its OWN ScreenGui (`hudGui`, not the intro's `screenGui`),
+-- built up front but fully invisible (CanvasGroup.GroupTransparency = 1)
+-- until `revealPowerHud()` runs at the very end of the master sequence --
+-- so it survives `screenGui:Destroy()` and stays on screen for the rest
+-- of the session instead of the intro just ending.
+--
+-- A circular dock of the 4 element icons sits at the bottom-center of
+-- the screen. WATER and LIGHTNING are live: clicking one runs that
+-- element's signature move on the player's REAL character, in-world
+-- (not a viewport clone) -- the same joint-pose + particle/bolt
+-- technique as the showcases above, just compressed and pointed at the
+-- live character instead. FIRE and EARTH are drawn dimmed with a locked
+-- shake until their own showcases exist.
+--
+-- POWER_MOVES is deliberately the single place that knows which
+-- elements are live -- each element currently ships 1 of its eventual 3
+-- signature moves, so adding move #2/#3 later (or turning fire/earth on)
+-- is a matter of extending this table and the perform*Cast functions
+-- below it, not restructuring the dock.
+-- ============================================================
+
+local POWER_MOVES = {
+	Water = { enabled = true, color = COLORS.Water },
+	Lightning = { enabled = true, color = COLORS.Lightning },
+	Fire = { enabled = false, color = COLORS.Fire },
+	Earth = { enabled = false, color = COLORS.Earth },
+}
+
+local CAST_COOLDOWN = 2.75
+
+local hudGui = Instance.new("ScreenGui")
+hudGui.Name = "PowerSelectorHud"
+hudGui.ResetOnSpawn = false
+hudGui.IgnoreGuiInset = true
+hudGui.DisplayOrder = 50
+hudGui.Parent = playerGui
+
+-- Full-screen overlay reserved for the release flash of a live cast
+-- (see screenFlash() above) -- kept as its own top layer so the flash
+-- always reads above the dock itself.
+local flashLayer = Instance.new("Frame")
+flashLayer.Name = "FlashLayer"
+flashLayer.Size = UDim2.fromScale(1, 1)
+flashLayer.BackgroundTransparency = 1
+flashLayer.ZIndex = 40
+flashLayer.Parent = hudGui
+
+-- A CanvasGroup composites all of its descendants (icons, rings, text --
+-- everything) into one image before applying GroupTransparency, so the
+-- whole dock can fade in/out as a single tween instead of having to
+-- manage transparency on every hand-drawn icon frame individually.
+local hudDock = Instance.new("CanvasGroup")
+hudDock.Name = "PowerDock"
+hudDock.AnchorPoint = Vector2.new(0.5, 1)
+hudDock.Position = UDim2.new(0.5, 0, 1, -vmin(0.035))
+hudDock.Size = UDim2.fromOffset(vmin(0.64), vmin(0.15))
+hudDock.BackgroundColor3 = Color3.fromRGB(8, 8, 14)
+hudDock.BackgroundTransparency = 0.25
+hudDock.GroupTransparency = 1
+hudDock.ZIndex = 10
+hudDock.Parent = hudGui
+
+local dockCorner = Instance.new("UICorner")
+dockCorner.CornerRadius = UDim.new(1, 0)
+dockCorner.Parent = hudDock
+
+local dockStroke = Instance.new("UIStroke")
+dockStroke.Color = COLORS.Accent
+dockStroke.Thickness = 1.5
+dockStroke.Transparency = 0.35
+dockStroke.Parent = hudDock
+
+local slotOrder = { "Water", "Lightning", "Fire", "Earth" }
+local slotDrawFns = { Water = drawWaterIcon, Lightning = drawLightningIcon, Fire = drawFireIcon, Earth = drawEarthIcon }
+local hudSlots = {}
+
+-- Slight vertical arc: the two edge slots sit a touch lower than the
+-- center pair, so the row reads as a curved "power wheel" dock instead
+-- of a flat bar of buttons.
+local arcOffsets = { vmin(0.01), -vmin(0.006), -vmin(0.006), vmin(0.01) }
+
+for i, elementName in ipairs(slotOrder) do
+	local move = POWER_MOVES[elementName]
+	local slotSize = vmin(0.105)
+
+	local button = Instance.new("TextButton")
+	button.Name = elementName .. "Slot"
+	button.Text = ""
+	button.AutoButtonColor = false
+	button.Size = UDim2.fromOffset(slotSize, slotSize)
+	button.AnchorPoint = Vector2.new(0.5, 0.5)
+	button.Position = UDim2.new((i - 0.5) / #slotOrder, 0, 0.5, arcOffsets[i])
+	button.BackgroundColor3 = Color3.fromRGB(14, 14, 20)
+	button.BackgroundTransparency = 0.15
+	button.ZIndex = 11
+	button.Parent = hudDock
+
+	local bCorner = Instance.new("UICorner")
+	bCorner.CornerRadius = UDim.new(1, 0)
+	bCorner.Parent = button
+
+	local ring = Instance.new("UIStroke")
+	ring.Color = move.color
+	ring.Thickness = 2.5
+	ring.Transparency = move.enabled and 0.2 or 0.75
+	ring.Parent = button
+
+	local iconArea = Instance.new("Frame")
+	iconArea.Size = UDim2.fromScale(0.5, 0.5)
+	iconArea.AnchorPoint = Vector2.new(0.5, 0.5)
+	iconArea.Position = UDim2.fromScale(0.5, 0.4)
+	iconArea.BackgroundTransparency = 1
+	iconArea.ZIndex = 12
+	iconArea.Parent = button
+	slotDrawFns[elementName](iconArea, move.enabled and move.color or move.color:Lerp(Color3.new(0.3, 0.3, 0.3), 0.5), UDim2.fromScale(1, 1))
+
+	local tag = Instance.new("TextLabel")
+	tag.BackgroundTransparency = 1
+	tag.Size = UDim2.fromScale(0.92, 0.22)
+	tag.AnchorPoint = Vector2.new(0.5, 1)
+	tag.Position = UDim2.fromScale(0.5, 0.97)
+	tag.Font = FONT_BODY
+	tag.Text = move.enabled and string.upper(elementName) or "SOON"
+	tag.TextColor3 = move.enabled and move.color or COLORS.TextDim
+	tag.TextScaled = true
+	tag.ZIndex = 12
+	tag.Parent = button
+	local tagConstraint = Instance.new("UITextSizeConstraint")
+	tagConstraint.MaxTextSize = 13
+	tagConstraint.Parent = tag
+
+	-- Cooldown wipe: a dark panel anchored to the bottom edge that
+	-- shrinks from full height to nothing over CAST_COOLDOWN seconds,
+	-- so casting a power visibly locks its own slot until it's ready
+	-- again instead of allowing instant spam-clicking.
+	local cooldownFill = Instance.new("Frame")
+	cooldownFill.Name = "CooldownFill"
+	cooldownFill.Size = UDim2.fromScale(1, 0)
+	cooldownFill.AnchorPoint = Vector2.new(0.5, 1)
+	cooldownFill.Position = UDim2.fromScale(0.5, 1)
+	cooldownFill.BackgroundColor3 = Color3.new(0, 0, 0)
+	cooldownFill.BackgroundTransparency = 0.45
+	cooldownFill.ZIndex = 13
+	cooldownFill.Parent = button
+
+	hudSlots[elementName] = { button = button, ring = ring, tag = tag, cooldownFill = cooldownFill, baseSize = slotSize }
+end
+
+local castCooldowns = {}
+
+-- Brief left-right shake on a locked slot -- the "not yet" feedback for
+-- clicking FIRE/EARTH before their showcases exist.
+local function flashLocked(elementName)
+	local slot = hudSlots[elementName]
+	if not slot then
+		return
+	end
+	local original = slot.button.Position
+	tween(slot.button, 0.05, { Position = original + UDim2.fromOffset(5, 0) })
+	task.delay(0.05, function()
+		tween(slot.button, 0.05, { Position = original - UDim2.fromOffset(5, 0) })
+		task.delay(0.05, function()
+			tween(slot.button, 0.06, { Position = original })
+		end)
+	end)
+end
+
+local function setSelected(elementName)
+	for name, slot in pairs(hudSlots) do
+		local move = POWER_MOVES[name]
+		local isSelected = name == elementName
+		tween(slot.ring, 0.2, { Transparency = isSelected and 0 or (move.enabled and 0.2 or 0.75) })
+		local targetSize = slot.baseSize * (isSelected and 1.12 or 1)
+		tween(slot.button, 0.15, { Size = UDim2.fromOffset(targetSize, targetSize) })
+	end
+end
+
+-- Reusable across every live element cast: captures every bending joint
+-- the player's ACTUAL rig has (not a clone), returns closures to pose
+-- toward an offset and to restore every joint back to its captured
+-- original C0 -- this restore step is what guarantees a cast never
+-- permanently leaves the player's real character stuck mid-pose.
+local function beginLiveJointControl(character)
+	local joints = getBendingJoints(character)
+	local originals = {}
+	if joints then
+		for jointName, motor in pairs(joints) do
+			originals[jointName] = motor.C0
+		end
+	end
+
+	local function poseBody(targets, duration: number)
+		if not joints then
+			return
+		end
+		local info = TweenInfo.new(duration, Enum.EasingStyle.Sine, Enum.EasingDirection.InOut)
+		for jointName, offsetCFrame in pairs(targets) do
+			local motor = joints[jointName]
+			if motor then
+				TweenService:Create(motor, info, { C0 = originals[jointName] * offsetCFrame }):Play()
+			end
+		end
+	end
+
+	local function restoreJoints(duration: number)
+		if not joints then
+			return
+		end
+		local info = TweenInfo.new(duration, Enum.EasingStyle.Sine, Enum.EasingDirection.InOut)
+		for jointName, motor in pairs(joints) do
+			TweenService:Create(motor, info, { C0 = originals[jointName] }):Play()
+		end
+	end
+
+	return joints, poseBody, restoreJoints
+end
+
+-- Live WATER cast: a compressed version of the waterbending showcase's
+-- pose/effects, run directly on the player's real character in the
+-- world instead of a viewport clone.
+local function performWaterCast(character, rootPart, poseBody, restoreJoints)
+	local rightHandPart = getHandAttachPart(character, "Right")
+	local leftHandPart = getHandAttachPart(character, "Left")
+
+	local rightAttach, rightEmitter
+	local leftAttach, leftEmitter
+	if rightHandPart then
+		rightAttach, rightEmitter = createWaterEmitter(rightHandPart)
+	end
+	if leftHandPart then
+		leftAttach, leftEmitter = createWaterEmitter(leftHandPart)
+	end
+	local rightTrail = createHandTrail(rightHandPart, COLORS.Water)
+	local ringPart, ringSwirl = createOrbitingWaterRing(character)
+
+	local orbitRunning = true
+	local orbitConn
+	orbitConn = RunService.Heartbeat:Connect(function()
+		if not orbitRunning or not ringPart.Parent then
+			if orbitConn then orbitConn:Disconnect() end
+			return
+		end
+		local angle = os.clock() * 3.4
+		local offset = Vector3.new(math.cos(angle) * 1.6, 1.1 + math.sin(angle * 1.7) * 0.15, math.sin(angle) * 1.6)
+		ringPart.CFrame = rootPart.CFrame * CFrame.new(offset)
+	end)
+
+	poseBody({
+		RightShoulder = CFrame.Angles(math.rad(-80), 0, math.rad(-65)),
+		LeftShoulder = CFrame.Angles(math.rad(-80), 0, math.rad(65)),
+	}, 0.35)
+	task.wait(0.4)
+
+	poseBody({
+		RightShoulder = CFrame.Angles(math.rad(-165), 0, math.rad(-15)),
+		LeftShoulder = CFrame.Angles(math.rad(-165), 0, math.rad(15)),
+		Waist = CFrame.Angles(math.rad(-8), 0, 0),
+	}, 0.4)
+	if rightEmitter then rightEmitter.Enabled = true end
+	if leftEmitter then leftEmitter.Enabled = true end
+	if ringSwirl then ringSwirl.Enabled = true end
+	task.wait(0.45)
+
+	if rightTrail then rightTrail.Enabled = true end
+	poseBody({
+		RightShoulder = CFrame.Angles(math.rad(-40), math.rad(-30), math.rad(-100)),
+		LeftShoulder = CFrame.Angles(math.rad(-100), math.rad(20), math.rad(70)),
+		Waist = CFrame.Angles(math.rad(15), math.rad(-25), 0),
+		RightHip = CFrame.Angles(math.rad(-35), math.rad(-10), 0),
+		LeftHip = CFrame.Angles(math.rad(20), math.rad(10), 0),
+		RightKnee = CFrame.Angles(math.rad(45), 0, 0),
+	}, 0.4)
+	task.wait(0.45)
+
+	poseBody({
+		RightShoulder = CFrame.Angles(math.rad(10), math.rad(-15), math.rad(-80)),
+		LeftShoulder = CFrame.Angles(math.rad(-110), math.rad(25), math.rad(85)),
+		Waist = CFrame.Angles(math.rad(22), math.rad(-30), 0),
+		RightHip = CFrame.Angles(math.rad(-55), math.rad(-15), 0),
+		LeftHip = CFrame.Angles(math.rad(35), math.rad(15), 0),
+		RightKnee = CFrame.Angles(math.rad(70), 0, 0),
+		LeftKnee = CFrame.Angles(math.rad(10), 0, 0),
+	}, 0.35)
+	if rightTrail then rightTrail.Enabled = false end
+	task.wait(0.6)
+
+	orbitRunning = false
+	if rightEmitter then rightEmitter.Enabled = false end
+	if leftEmitter then leftEmitter.Enabled = false end
+	if ringSwirl then ringSwirl.Enabled = false end
+	restoreJoints(0.4)
+	task.wait(0.45)
+
+	if rightAttach then rightAttach:Destroy() end
+	if leftAttach then leftAttach:Destroy() end
+	if rightTrail then rightTrail:Destroy() end
+	if ringPart then ringPart:Destroy() end
+end
+
+-- Live LIGHTNING cast: a compressed version of the lightningbending
+-- showcase's pose/effects, run directly on the player's real character.
+-- The bolt's temporary target part anchors under `character` itself (not
+-- workspace directly) purely so it gets cleaned up automatically if the
+-- character resets mid-effect.
+local function performLightningCast(character, rootPart, poseBody, restoreJoints)
+	local rightHandPart = getHandAttachPart(character, "Right")
+	local leftHandPart = getHandAttachPart(character, "Left")
+
+	local rightAttach, rightEmitter
+	local leftAttach, leftEmitter
+	if rightHandPart then
+		rightAttach, rightEmitter = createSparkEmitter(rightHandPart, COLORS.Lightning)
+	end
+	if leftHandPart then
+		leftAttach, leftEmitter = createSparkEmitter(leftHandPart, COLORS.Lightning)
+	end
+	local crackleArc = createCrackleArc(rightAttach, leftAttach, COLORS.Lightning)
+
+	poseBody({
+		RightShoulder = CFrame.Angles(math.rad(-70), math.rad(20), math.rad(-40)),
+		LeftShoulder = CFrame.Angles(math.rad(-40), math.rad(-10), math.rad(50)),
+		Waist = CFrame.Angles(0, math.rad(18), 0),
+	}, 0.35)
+	task.wait(0.4)
+
+	poseBody({
+		RightShoulder = CFrame.Angles(math.rad(-15), math.rad(10), math.rad(-95)),
+		LeftShoulder = CFrame.Angles(math.rad(80), math.rad(-15), math.rad(15)),
+		Waist = CFrame.Angles(math.rad(-5), math.rad(25), 0),
+	}, 0.4)
+	if rightEmitter then rightEmitter.Enabled = true end
+	if leftEmitter then leftEmitter.Enabled = true end
+	if crackleArc then crackleArc.Enabled = true end
+	task.wait(0.3)
+
+	local crackling = true
+	local crackleConn
+	if crackleArc then
+		crackleConn = RunService.Heartbeat:Connect(function()
+			if not crackling or not crackleArc.Parent then
+				if crackleConn then crackleConn:Disconnect() end
+				return
+			end
+			crackleArc.CurveSize0 = (math.random() - 0.5) * 1.2
+			crackleArc.CurveSize1 = (math.random() - 0.5) * 1.2
+		end)
+	end
+	task.wait(0.4)
+	crackling = false
+	if crackleArc then crackleArc.Enabled = false end
+
+	poseBody({
+		RightShoulder = CFrame.Angles(math.rad(-5), 0, math.rad(-88)),
+		LeftShoulder = CFrame.Angles(math.rad(60), math.rad(20), math.rad(65)),
+		Waist = CFrame.Angles(math.rad(10), math.rad(-20), 0),
+		RightHip = CFrame.Angles(math.rad(-30), math.rad(-10), 0),
+		LeftHip = CFrame.Angles(math.rad(15), math.rad(10), 0),
+		RightKnee = CFrame.Angles(math.rad(35), 0, 0),
+	}, 0.25)
+	task.wait(0.28)
+
+	if rightEmitter then rightEmitter.Enabled = false end
+	if leftEmitter then leftEmitter.Enabled = false end
+	if rightHandPart then
+		fireLightningBolt(rightHandPart, rootPart, character, COLORS.Lightning)
+	end
+	screenFlash(flashLayer, COLORS.Lightning)
+	task.wait(0.2)
+
+	if rightEmitter then
+		rightEmitter.Enabled = true
+		rightEmitter.Rate = 20
+	end
+	task.wait(0.5)
+
+	if rightEmitter then rightEmitter.Enabled = false end
+	restoreJoints(0.4)
+	task.wait(0.45)
+
+	if rightAttach then rightAttach:Destroy() end
+	if leftAttach then leftAttach:Destroy() end
+	if crackleArc then crackleArc:Destroy() end
+end
+
+-- Dispatcher wired to each enabled slot's click: debounces per element
+-- via CAST_COOLDOWN, briefly freezes movement/jumping so the pose reads
+-- cleanly instead of fighting the walk/idle animations, then always
+-- restores both movement and every joint afterward -- even if the cast
+-- itself errors, via pcall.
+local function performCast(elementName)
+	local now = os.clock()
+	if castCooldowns[elementName] and now - castCooldowns[elementName] < CAST_COOLDOWN then
+		return
+	end
+	castCooldowns[elementName] = now
+
+	local slot = hudSlots[elementName]
+	if slot and slot.cooldownFill then
+		slot.cooldownFill.Size = UDim2.fromScale(1, 1)
+		tween(slot.cooldownFill, CAST_COOLDOWN, { Size = UDim2.fromScale(1, 0) }, Enum.EasingStyle.Linear)
+	end
+
+	task.spawn(function()
+		local character = localPlayer.Character
+		if not character then
+			return
+		end
+		local rootPart = character:FindFirstChild("HumanoidRootPart")
+		local humanoid = character:FindFirstChildOfClass("Humanoid")
+		if not rootPart or not humanoid then
+			return
+		end
+
+		setSelected(elementName)
+
+		local originalWalkSpeed = humanoid.WalkSpeed
+		local jumpOk, originalJumpEnabled = pcall(function()
+			return humanoid:GetStateEnabled(Enum.HumanoidStateType.Jumping)
+		end)
+		humanoid.WalkSpeed = 0
+		pcall(function()
+			humanoid:SetStateEnabled(Enum.HumanoidStateType.Jumping, false)
+		end)
+
+		local _joints, poseBody, restoreJoints = beginLiveJointControl(character)
+
+		local ok, err = pcall(function()
+			if elementName == "Water" then
+				performWaterCast(character, rootPart, poseBody, restoreJoints)
+			elseif elementName == "Lightning" then
+				performLightningCast(character, rootPart, poseBody, restoreJoints)
+			end
+		end)
+		if not ok then
+			warn(("[IntroSequenceClient] %s cast hit an error: %s"):format(elementName, tostring(err)))
+			restoreJoints(0.3)
+		end
+
+		humanoid.WalkSpeed = originalWalkSpeed
+		pcall(function()
+			humanoid:SetStateEnabled(Enum.HumanoidStateType.Jumping, jumpOk and originalJumpEnabled or true)
+		end)
+	end)
+end
+
+for elementName, slot in pairs(hudSlots) do
+	local move = POWER_MOVES[elementName]
+	slot.button.MouseButton1Click:Connect(function()
+		if move.enabled then
+			performCast(elementName)
+		else
+			flashLocked(elementName)
+		end
+	end)
+
+	if move.enabled then
+		slot.button.MouseEnter:Connect(function()
+			tween(slot.ring, 0.15, { Thickness = 3.5 })
+		end)
+		slot.button.MouseLeave:Connect(function()
+			tween(slot.ring, 0.15, { Thickness = 2.5 })
+		end)
+	end
+end
+
+-- Gentle idle "breathing" pulse on the live slots' rings, same technique
+-- as the loading screen's ring pulse -- keeps the dock feeling alive
+-- rather than static once it's revealed.
+RunService.Heartbeat:Connect(function()
+	local s = 1 + math.sin(os.clock() * 2.2) * 0.06
+	for elementName, slot in pairs(hudSlots) do
+		if POWER_MOVES[elementName].enabled then
+			slot.ring.Thickness = 2.5 * s
+		end
+	end
+end)
+
+local function revealPowerHud()
+	tween(hudDock, 1, { GroupTransparency = 0 })
+end
+
+-- ============================================================
 -- MASTER SEQUENCE
 -- ============================================================
 
@@ -1716,8 +2711,29 @@ local function runFullSequence()
 
 	runPhase("Welcome", runWelcomeScreen)
 	runPhase("Loading", runLoadingScreen, skipBindable)
-	runPhase("ElementsIntro", runElementsIntro)
+
+	runPhase("WaterCard", function()
+		runElementCard("WATER", COLORS.Water)
+	end)
+	task.wait(0.3)
 	runPhase("WaterbendingShowcase", runWaterbendingShowcase)
+	task.wait(0.6)
+
+	runPhase("LightningCard", function()
+		runElementCard("LIGHTNING", COLORS.Lightning)
+	end)
+	task.wait(0.3)
+	runPhase("LightningbendingShowcase", runLightningbendingShowcase)
+	task.wait(0.6)
+
+	runPhase("FireCard", function()
+		runElementCard("FIRE", COLORS.Fire)
+	end)
+	task.wait(1.2)
+	runPhase("EarthCard", function()
+		runElementCard("EARTH", COLORS.Earth)
+	end)
+
 	runPhase("CreatorCredit", runCreatorCredit)
 	runPhase("LogoScreen", runLogoScreen)
 
@@ -1728,6 +2744,12 @@ local function runFullSequence()
 	screenGui:Destroy()
 	musicSound:Stop()
 	musicSound:Destroy()
+
+	-- The cinematic overlay is gone, but per design nothing is just
+	-- "closed" -- the power selector (built earlier, invisible until now)
+	-- fades in here as the persistent piece the player keeps using after
+	-- the intro ends.
+	runPhase("RevealPowerHud", revealPowerHud)
 end
 
 runFullSequence()

@@ -1,1 +1,2 @@
 - [ViewportFrame lighting & phase isolation](roblox-viewportframe-lighting.md) — ViewportFrame needs explicit Ambient/LightColor or avatars render black; isolate sequential phases with pcall + bounded waits.
+- [Checking Luau syntax with no Studio](luau-syntax-checking-without-studio.md) — use a Node balance-checker via nix-shell; don't double-count `do` in for/while as a separate block.
