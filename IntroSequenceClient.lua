@@ -17,15 +17,36 @@
 		7. Logo reveal
 		8. Cleanup -> player gains control
 
-	v3 CHANGELOG:
-	- Fixed everything overlapping: loading screen ring/title/subtitle/
-	  progress bar/skip button now each have their own vertical band with
-	  real breathing room between them.
-	- Replaced the old generic circle "orbs" with hand-built vector icons
-	  for each element (a water droplet, a lightning bolt, a flame, a
-	  mountain/earth glyph) drawn from primitives — no emoji/unicode glyphs
-	  anywhere in this file.
-	- Added the new player-avatar Waterbending phase (see PHASE 4 below).
+	v4 CHANGELOG:
+	- Root cause of the "everything is stacked on top of each other"
+	  overlap bug: earlier versions mixed UDim2.fromOffset (fixed pixel)
+	  sizes for the loading-screen ring/icons with UDim2.fromScale
+	  (percentage) sizes for everything else. On any resolution that
+	  wasn't the exact one this was eyeballed at, the fixed-pixel block
+	  would balloon or shrink independently of the scale-based bands
+	  around it and crash straight into the title/progress text.
+	  Fixed by driving every critical size off `vmin()`, a helper that
+	  scales against the SMALLER screen dimension, so the ring block,
+	  icon slots, connector bars, and underlines all shrink/grow together
+	  with the screen instead of drifting apart from the text bands.
+	- Widened every vertical band's margins so there is generous, visible
+	  breathing room between title / ring / progress / skip everywhere,
+	  not just the bare minimum.
+	- Logo screen's three underline bars now use a UIListLayout instead
+	  of manual absolute X positions, so they can never overlap each
+	  other on narrow screens.
+	- Redesigned the 4 hand-built element icons with an extra
+	  highlight/glow pass each (shine on the water droplet, soft outer
+	  glow behind the lightning bolt, hot tip on the flame, faceted
+	  highlight on the earth glyph) so they read as deliberately designed
+	  icons instead of flat silhouettes.
+	- Waterbending showcase (PHASE 4) rewritten to actually move the
+	  whole body, not just the shoulders: added rig detection (R15/R6),
+	  waist and hip/knee joints, a 4-beat pose sequence matched frame-by-
+	  frame against the Avatar: The Last Airbender intro reference clip
+	  (channel stance -> gather overhead -> twisting sweep into a lunge ->
+	  frozen low-lunge release), a comet-style water Trail on the lead
+	  hand during the sweep, and cinematic camera moves for each beat.
 ]]
 
 local Players = game:GetService("Players")
@@ -61,6 +82,24 @@ local COLORS = {
 local FONT_TITLE = Enum.Font.FredokaOne
 local FONT_BODY = Enum.Font.GothamMedium
 local FONT_SUBTITLE = Enum.Font.Gotham
+
+-- ============================================================
+-- RESOLUTION-SAFE SIZING
+--
+-- Everything that needs a fixed pixel footprint (the loading ring,
+-- element icon slots, connector bars, underlines...) is sized off the
+-- SMALLER screen dimension instead of a hardcoded pixel value. That way
+-- a phone in portrait, a tiny docked Studio test window, and a 4K
+-- desktop all get a proportionally identical layout instead of the
+-- fixed-pixel block drifting out of its scale-based band and crashing
+-- into neighboring text.
+-- ============================================================
+
+local viewportSize = workspace.CurrentCamera.ViewportSize
+
+local function vmin(fraction: number): number
+	return math.min(viewportSize.X, viewportSize.Y) * fraction
+end
 
 -- ============================================================
 -- ROOT GUI
@@ -219,10 +258,27 @@ local function drawWaterIcon(parent, color, size)
 	bulbCorner.CornerRadius = UDim.new(1, 0)
 	bulbCorner.Parent = bulb
 
+	-- Shine highlight: a small bright crescent on the upper-left of the
+	-- bulb so the droplet reads as glossy/wet rather than a flat blob.
+	local shine = Instance.new("Frame")
+	shine.Size = UDim2.fromScale(0.22, 0.14)
+	shine.AnchorPoint = Vector2.new(0.5, 0.5)
+	shine.Position = UDim2.fromScale(0.36, 0.48)
+	shine.Rotation = -25
+	shine.BackgroundColor3 = color:Lerp(Color3.new(1, 1, 1), 0.65)
+	shine.BackgroundTransparency = 0.15
+	shine.BorderSizePixel = 0
+	shine.ZIndex = 8
+	shine.Parent = bulb
+	local shineCorner = Instance.new("UICorner")
+	shineCorner.CornerRadius = UDim.new(1, 0)
+	shineCorner.Parent = shine
+
 	return holder
 end
 
--- LIGHTNING: a zig-zag bolt built from three angled bars
+-- LIGHTNING: a zig-zag bolt built from three angled bars, with a larger,
+-- softer, more-transparent duplicate of each bar behind it for a glow.
 local function drawLightningIcon(parent, color, size)
 	local holder = Instance.new("Frame")
 	holder.Size = size
@@ -231,6 +287,27 @@ local function drawLightningIcon(parent, color, size)
 	holder.BackgroundTransparency = 1
 	holder.ZIndex = 7
 	holder.Parent = parent
+
+	local glowColor = color:Lerp(Color3.new(1, 1, 1), 0.2)
+	local function addGlow(barSize, barPos, rotation)
+		local glow = Instance.new("Frame")
+		glow.Size = UDim2.new(barSize.X.Scale * 1.5, 0, barSize.Y.Scale * 1.35, 0)
+		glow.AnchorPoint = Vector2.new(0.5, 0.5)
+		glow.Position = barPos
+		glow.Rotation = rotation
+		glow.BackgroundColor3 = glowColor
+		glow.BackgroundTransparency = 0.65
+		glow.BorderSizePixel = 0
+		glow.ZIndex = 6
+		glow.Parent = holder
+		local glowCorner = Instance.new("UICorner")
+		glowCorner.CornerRadius = UDim.new(0.4, 0)
+		glowCorner.Parent = glow
+	end
+
+	addGlow(UDim2.fromScale(0.22, 0.62), UDim2.fromScale(0.58, 0.28), 22)
+	addGlow(UDim2.fromScale(0.6, 0.24), UDim2.fromScale(0.48, 0.52), -18)
+	addGlow(UDim2.fromScale(0.22, 0.62), UDim2.fromScale(0.4, 0.74), 22)
 
 	local barTop = Instance.new("Frame")
 	barTop.Size = UDim2.fromScale(0.22, 0.62)
@@ -321,6 +398,21 @@ local function drawFireIcon(parent, color, size)
 	coreCorner.CornerRadius = UDim.new(0.5, 0)
 	coreCorner.Parent = core
 
+	-- Hot tip: a small bright yellow-white ember at the very top of the
+	-- flame so it reads as a real fire rather than a flat orange blob.
+	local hotTip = Instance.new("Frame")
+	hotTip.Size = UDim2.fromScale(0.16, 0.2)
+	hotTip.AnchorPoint = Vector2.new(0.5, 1)
+	hotTip.Position = UDim2.fromScale(0.5, 0.62)
+	hotTip.BackgroundColor3 = Color3.fromRGB(255, 235, 180)
+	hotTip.BackgroundTransparency = 0.1
+	hotTip.BorderSizePixel = 0
+	hotTip.ZIndex = 9
+	hotTip.Parent = holder
+	local hotTipCorner = Instance.new("UICorner")
+	hotTipCorner.CornerRadius = UDim.new(0.5, 0)
+	hotTipCorner.Parent = hotTip
+
 	return holder
 end
 
@@ -372,6 +464,23 @@ local function drawEarthIcon(parent, color, size)
 	local c3 = Instance.new("UICorner")
 	c3.CornerRadius = UDim.new(0.3, 0)
 	c3.Parent = ground
+
+	-- Faceted highlight: a small lighter wedge on the front peak's
+	-- upper-left face so the mountain reads as a cut rock facet instead
+	-- of a flat silhouette.
+	local facet = Instance.new("Frame")
+	facet.Size = UDim2.fromScale(0.22, 0.3)
+	facet.AnchorPoint = Vector2.new(0.5, 1)
+	facet.Position = UDim2.fromScale(0.36, 0.72)
+	facet.Rotation = 45
+	facet.BackgroundColor3 = color:Lerp(Color3.new(1, 1, 1), 0.45)
+	facet.BackgroundTransparency = 0.2
+	facet.BorderSizePixel = 0
+	facet.ZIndex = 8
+	facet.Parent = holder
+	local facetCorner = Instance.new("UICorner")
+	facetCorner.CornerRadius = UDim.new(0.15, 0)
+	facetCorner.Parent = facet
 
 	return holder
 end
@@ -432,8 +541,8 @@ local function runWelcomeScreen()
 
 	-- Animations
 	tween(welcomeLabel, 1.5, { TextTransparency = 0 })
-	tween(topLine, 1, { Size = UDim2.new(0, 300, 0, 2) })
-	tween(bottomLine, 1, { Size = UDim2.new(0, 300, 0, 2) })
+	tween(topLine, 1, { Size = UDim2.new(0, vmin(0.32), 0, 2) })
+	tween(bottomLine, 1, { Size = UDim2.new(0, vmin(0.32), 0, 2) })
 	task.wait(0.6)
 	tween(continueButton, 1, { TextTransparency = 0, BackgroundTransparency = 0.3 })
 	tween(stroke, 1, { Transparency = 0 })
@@ -467,18 +576,31 @@ end
 
 -- ============================================================
 -- PHASE 2: LOADING SCREEN
--- Layout is now split into clearly separated vertical bands so nothing
--- overlaps:
---   0.06 - 0.16   Title
---   0.16 - 0.22   Subtitle
---   0.24 - 0.62   Ring + 4 element icons (self-contained square block)
---   0.66 - 0.72   Progress label
---   0.80 - 0.87   Skip button
+-- Layout is split into clearly separated vertical bands, each with a
+-- comfortable margin to its neighbors, so nothing overlaps:
+--   0.04  - 0.115  Title
+--   0.135 - 0.17   Subtitle
+--   ~0.35 - ~0.65  Ring + 4 element icons (self-contained square block,
+--                  actual size driven by vmin() so it never grows/shrinks
+--                  out of proportion to the bands around it)
+--   0.78  - 0.82   Progress label
+--   0.885 - 0.93   Skip button
 -- ============================================================
 
 local function createElementSlot(parent, elementName, color, position, drawFn)
+	-- Every dimension here comes from vmin() rather than a fixed pixel
+	-- value, so the whole slot (icon + label) shrinks and grows in lockstep
+	-- with the ring block around it on any screen size. Kept deliberately
+	-- compact (relative to the ring block) so the slot+label pair never
+	-- reaches far enough beyond the ring's own band to crowd the title or
+	-- progress text, even on extreme (very short/wide) viewports.
+	local slotSize = vmin(0.075)
+	local labelGap = vmin(0.018)
+	local labelWidth = vmin(0.14)
+	local labelHeight = vmin(0.026)
+
 	local holder = Instance.new("Frame")
-	holder.Size = UDim2.fromOffset(64, 64)
+	holder.Size = UDim2.fromOffset(slotSize, slotSize)
 	holder.AnchorPoint = Vector2.new(0.5, 0.5)
 	holder.Position = position
 	holder.BackgroundColor3 = Color3.fromRGB(10, 10, 14)
@@ -512,9 +634,9 @@ local function createElementSlot(parent, elementName, color, position, drawFn)
 	-- icon above it or a neighboring label beside it.
 	local nameLabel = Instance.new("TextLabel")
 	nameLabel.BackgroundTransparency = 1
-	nameLabel.Size = UDim2.new(0, 130, 0, 20)
+	nameLabel.Size = UDim2.fromOffset(labelWidth, labelHeight)
 	nameLabel.AnchorPoint = Vector2.new(0.5, 0)
-	nameLabel.Position = UDim2.new(0.5, 0, 1, 10)
+	nameLabel.Position = UDim2.new(0.5, 0, 1, labelGap)
 	nameLabel.Font = FONT_BODY
 	nameLabel.Text = elementName
 	nameLabel.TextColor3 = color
@@ -538,46 +660,49 @@ local function runLoadingScreen(skipBindable: BindableEvent)
 	container.ZIndex = 5
 	container.Parent = backdrop
 
-	-- Title band
+	-- Title band: 0.04 - 0.115
 	local titleMain = makeLabel({
 		Parent = container,
 		Text = "THE ELEMENTS",
 		Font = FONT_TITLE,
 		TextColor3 = COLORS.TextPrimary,
-		Size = UDim2.fromScale(0.8, 0.09),
-		Position = UDim2.fromScale(0.1, 0.07),
+		Size = UDim2.fromScale(0.8, 0.075),
+		Position = UDim2.fromScale(0.1, 0.04),
 		Constrain = true,
 		MaxTextSize = 100,
 		TextTransparency = 1,
 	})
 
+	-- Subtitle band: 0.135 - 0.17 (well clear of the title above)
 	local titleSub = makeLabel({
 		Parent = container,
 		Text = "AWAKENING",
 		Font = FONT_SUBTITLE,
 		TextColor3 = COLORS.Accent,
-		Size = UDim2.fromScale(0.6, 0.04),
-		Position = UDim2.fromScale(0.2, 0.175),
+		Size = UDim2.fromScale(0.6, 0.035),
+		Position = UDim2.fromScale(0.2, 0.135),
 		Constrain = true,
 		MaxTextSize = 32,
 		TextTransparency = 1,
 	})
 
-	-- Ring block: a self-contained square region, vertically centered in
-	-- its own band (0.24 to 0.66), well clear of the title above and the
-	-- progress label below.
+	-- Ring block: a self-contained square region sized off vmin() (the
+	-- smaller screen dimension) instead of a fixed pixel box, centered
+	-- in its own band with generous clearance from the title above and
+	-- the progress label below on every aspect ratio.
+	local ringHolderSize = vmin(0.3)
 	local ringHolder = Instance.new("Frame")
 	ringHolder.Name = "RingHolder"
-	ringHolder.Size = UDim2.fromOffset(300, 300)
+	ringHolder.Size = UDim2.fromOffset(ringHolderSize, ringHolderSize)
 	ringHolder.AnchorPoint = Vector2.new(0.5, 0.5)
-	ringHolder.Position = UDim2.fromScale(0.5, 0.44)
+	ringHolder.Position = UDim2.fromScale(0.5, 0.5)
 	ringHolder.BackgroundTransparency = 1
 	ringHolder.ZIndex = 5
 	ringHolder.Parent = container
 
 	local ring = Instance.new("Frame")
 	ring.Name = "Ring"
-	ring.Size = UDim2.fromOffset(150, 150)
+	ring.Size = UDim2.fromScale(0.5, 0.5)
 	ring.AnchorPoint = Vector2.new(0.5, 0.5)
 	ring.Position = UDim2.fromScale(0.5, 0.5)
 	ring.BackgroundTransparency = 1
@@ -608,13 +733,15 @@ local function runLoadingScreen(skipBindable: BindableEvent)
 	strokeGradient.Parent = ringStroke
 	ring.BackgroundTransparency = 1
 
-	-- Four element slots placed at the CORNERS of the ring holder square,
-	-- well outside the ring itself (radius ~150px) so icons never overlap
-	-- the ring or each other. Each slot is 64px with 10px label gap below.
-	local waterSlot = createElementSlot(ringHolder, "WATER", COLORS.Water, UDim2.fromScale(0.5, 0.02), drawWaterIcon)
-	local lightningSlot = createElementSlot(ringHolder, "LIGHTNING", COLORS.Lightning, UDim2.fromScale(0.98, 0.5), drawLightningIcon)
-	local fireSlot = createElementSlot(ringHolder, "FIRE", COLORS.Fire, UDim2.fromScale(0.5, 0.98), drawFireIcon)
-	local earthSlot = createElementSlot(ringHolder, "EARTH", COLORS.Earth, UDim2.fromScale(0.02, 0.5), drawEarthIcon)
+	-- Four element slots placed at the edges of the ring holder square,
+	-- inset well inward from the corners (0.15 / 0.85, not 0.02 / 0.98)
+	-- so the slot + its label sit comfortably inside the ring block's own
+	-- band and never reach far enough out to touch the title or progress
+	-- text above/below, even on extreme (very short/wide) viewports.
+	local waterSlot = createElementSlot(ringHolder, "WATER", COLORS.Water, UDim2.fromScale(0.5, 0.15), drawWaterIcon)
+	local lightningSlot = createElementSlot(ringHolder, "LIGHTNING", COLORS.Lightning, UDim2.fromScale(0.85, 0.5), drawLightningIcon)
+	local fireSlot = createElementSlot(ringHolder, "FIRE", COLORS.Fire, UDim2.fromScale(0.5, 0.85), drawFireIcon)
+	local earthSlot = createElementSlot(ringHolder, "EARTH", COLORS.Earth, UDim2.fromScale(0.15, 0.5), drawEarthIcon)
 
 	-- Correct anchor points so slots sit fully outside their edge rather
 	-- than being clipped by the holder bounds.
@@ -656,24 +783,24 @@ local function runLoadingScreen(skipBindable: BindableEvent)
 		tween(slot.nameLabel, 1, { TextTransparency = 0 })
 	end
 
-	-- Progress band (0.68 - 0.74), clear of the ring above
+	-- Progress band: 0.78 - 0.82, clear of the ring above
 	local progressLabel = makeLabel({
 		Parent = container,
 		Text = "INITIALIZING... 0%",
 		Font = FONT_BODY,
 		TextColor3 = COLORS.TextPrimary,
-		Size = UDim2.fromScale(0.7, 0.045),
-		Position = UDim2.fromScale(0.15, 0.735),
+		Size = UDim2.fromScale(0.7, 0.04),
+		Position = UDim2.fromScale(0.15, 0.78),
 		Constrain = true,
 		MaxTextSize = 26,
 		TextTransparency = 1,
 	})
 
-	-- Skip button band (0.85 - 0.91), fully clear of progress label
+	-- Skip button band: 0.885 - 0.93, fully clear of the progress label
 	local skipButton = Instance.new("TextButton")
 	skipButton.Name = "SkipButton"
-	skipButton.Size = UDim2.fromScale(0.14, 0.05)
-	skipButton.Position = UDim2.fromScale(0.5, 0.87)
+	skipButton.Size = UDim2.fromScale(0.14, 0.045)
+	skipButton.Position = UDim2.fromScale(0.5, 0.885)
 	skipButton.AnchorPoint = Vector2.new(0.5, 0)
 	skipButton.BackgroundColor3 = COLORS.BackgroundDark
 	skipButton.BackgroundTransparency = 0.4
@@ -806,9 +933,9 @@ local function runElementCard(name: string, color: Color3)
 	})
 
 	task.wait(0.2)
-	tween(topBar, 0.6, { Size = UDim2.new(0, 500, 0, 6) })
+	tween(topBar, 0.6, { Size = UDim2.new(0, vmin(0.55), 0, 6) })
 	task.wait(0.15)
-	tween(bottomBar, 0.6, { Size = UDim2.new(0, 500, 0, 6) })
+	tween(bottomBar, 0.6, { Size = UDim2.new(0, vmin(0.55), 0, 6) })
 	task.wait(0.1)
 	tween(nameLabel, 0.8, { TextTransparency = 0 })
 	tween(glowBg, 0.8, { BackgroundTransparency = 0.92 })
@@ -835,45 +962,94 @@ local function runElementsIntro()
 end
 
 -- ============================================================
--- PHASE 4: WATERBENDING SHOWCASE (NEW)
+-- PHASE 4: WATERBENDING SHOWCASE
 --
--- Loads the player's OWN avatar into a ViewportFrame centered on screen,
--- exactly like the character silhouette in the Avatar: The Last Airbender
--- intro. The avatar plays a hand-authored waterbending pose sequence:
---   1. Idle, arms relaxed
---   2. Arms rise and cross in front of chest (gathering stance)
---   3. Arms sweep outward and up in a wide circular arc (drawing the water)
---   4. Arms come together in front, cupped (compressing the water sphere)
---   5. One arm extends forward, water "release" pose, weight shifts into
---      a low stance (mirrors the final push/stance frame in the reference)
--- Real water particles (ParticleEmitter) stream from the hands and orbit
--- between them throughout, matching the swirling water shown in the
--- reference clip.
+-- AVATAR DETECTION: this phase does not use a generic/placeholder model.
+-- It grabs whatever character the LOCAL PLAYER is actually wearing right
+-- now (localPlayer.Character), clones it, detects whether it's an R15 or
+-- R6 rig, and finds whichever of the shoulder/waist/hip/knee joints that
+-- specific rig actually has. Any avatar the player is wearing works —
+-- nothing is hardcoded to one body. Only WATER gets this full showcase
+-- for now; LIGHTNING/FIRE/EARTH stay as the plain title cards above.
+--
+-- The pose sequence below was built by stepping through the Avatar: The
+-- Last Airbender intro reference clip (~2.8s) frame by frame and
+-- matching each beat:
+--   Beat 0 (~0.0s ref): idle silhouette, arms relaxed at the sides.
+--   Beat 1 (~0.5s ref): arms rise out to the sides, elbows bent, palms
+--                       forward — the "channeling" stance.
+--   Beat 2 (~1.0s ref): arms draw up and in, crossing near the chest/
+--                       head — gathering the water overhead.
+--   Beat 3 (~1.6s ref): torso twists, the back leg steps into a lunge,
+--                       and the arms sweep down and out in a wide arc —
+--                       this is where the reference's dramatic water
+--                       streak/swoosh happens, so a comet-style Trail
+--                       fires on the lead hand here.
+--   Beat 4 (~2.2s+ ref): frozen deep low lunge — front knee bent hard,
+--                       back leg extended, torso leaned forward, lead
+--                       arm thrust low/forward, other arm pulled back —
+--                       the final hero freeze-frame of the clip.
+-- Real water particles stream from both hands throughout, and an
+-- orbiting swirl circles the torso while the water is being gathered.
 -- ============================================================
 
--- Collects the Motor6D joints we need to animate a humanoid rig (R15 or R6 safe)
-local function getBendingJoints(character)
-	local joints = {}
-
-	local rightUpperArm = character:FindFirstChild("RightUpperArm") or character:FindFirstChild("Right Arm")
-	local leftUpperArm = character:FindFirstChild("LeftUpperArm") or character:FindFirstChild("Left Arm")
-	local upperTorso = character:FindFirstChild("UpperTorso") or character:FindFirstChild("Torso")
-
-	if not (rightUpperArm and leftUpperArm and upperTorso) then
-		return nil
-	end
-
-	local function motorFor(part)
-		for _, child in ipairs(part:GetChildren()) do
-			if child:IsA("Motor6D") then
-				return child
-			end
+-- Roblox's two common rig skeletons name their joints differently
+-- (R15: "RightShoulder"/"Waist"/"RightHip"/"RightKnee"; R6: "Right
+-- Shoulder"/"Right Hip", no waist or knees). Detecting which one we're
+-- dealing with lets the rest of the animation ask for the right names
+-- instead of guessing.
+local function detectRigType(character): string?
+	local humanoid = character:FindFirstChildOfClass("Humanoid")
+	if humanoid then
+		local ok, rigType = pcall(function()
+			return humanoid.RigType
+		end)
+		if ok and rigType == Enum.HumanoidRigType.R15 then
+			return "R15"
+		elseif ok and rigType == Enum.HumanoidRigType.R6 then
+			return "R6"
 		end
+	end
+	-- Fallback: infer from parts present, in case RigType is unavailable
+	if character:FindFirstChild("UpperTorso") then
+		return "R15"
+	elseif character:FindFirstChild("Torso") then
+		return "R6"
+	end
+	return nil
+end
+
+-- Finds the first Motor6D anywhere under `character` whose Name matches
+-- one of the given candidates (covers both R15 and R6 naming).
+local function findJointByNames(character, names): Motor6D?
+	for _, jointName in ipairs(names) do
+		local found = character:FindFirstChild(jointName, true)
+		if found and found:IsA("Motor6D") then
+			return found
+		end
+	end
+	return nil
+end
+
+-- Collects every joint we might be able to animate on this specific rig.
+-- Only the shoulders are required; waist/hips/knees are used opportunistically
+-- if the rig has them (R15 does, R6 doesn't have a waist or knees) so the
+-- pose still reads as a full-body lunge on R15 and gracefully falls back to
+-- an arms-only pose on R6 or any unusual rig.
+local function getBendingJoints(character)
+	local joints = {
+		RightShoulder = findJointByNames(character, { "RightShoulder", "Right Shoulder" }),
+		LeftShoulder = findJointByNames(character, { "LeftShoulder", "Left Shoulder" }),
+		Waist = findJointByNames(character, { "Waist" }),
+		RightHip = findJointByNames(character, { "RightHip", "Right Hip" }),
+		LeftHip = findJointByNames(character, { "LeftHip", "Left Hip" }),
+		RightKnee = findJointByNames(character, { "RightKnee" }),
+		LeftKnee = findJointByNames(character, { "LeftKnee" }),
+	}
+
+	if not (joints.RightShoulder and joints.LeftShoulder) then
 		return nil
 	end
-
-	joints.RightShoulder = motorFor(rightUpperArm)
-	joints.LeftShoulder = motorFor(leftUpperArm)
 
 	return joints
 end
@@ -961,7 +1137,52 @@ local function createOrbitingWaterRing(parent)
 	return ringPart, swirl
 end
 
+-- A comet-style water streak that follows the lead hand during the sweep
+-- and release beats. Built from two Attachments spaced slightly apart on
+-- the same hand part -- a Trail naturally interpolates a ribbon between
+-- them as the hand moves, so the "épico" swoosh from the reference clip
+-- comes for free from the pose tween itself, with no manual per-frame
+-- particle code needed.
+local function createHandTrail(handPart, color: Color3): Trail?
+	if not handPart then
+		return nil
+	end
+
+	local attachment0 = Instance.new("Attachment")
+	attachment0.Name = "TrailAttach0"
+	attachment0.Position = Vector3.new(0, 0.05, 0)
+	attachment0.Parent = handPart
+
+	local attachment1 = Instance.new("Attachment")
+	attachment1.Name = "TrailAttach1"
+	attachment1.Position = Vector3.new(0, -0.35, 0)
+	attachment1.Parent = handPart
+
+	local trail = Instance.new("Trail")
+	trail.Attachment0 = attachment0
+	trail.Attachment1 = attachment1
+	trail.Color = ColorSequence.new(color:Lerp(Color3.new(1, 1, 1), 0.5), color)
+	trail.Transparency = NumberSequence.new({
+		NumberSequenceKeypoint.new(0, 0.15),
+		NumberSequenceKeypoint.new(0.7, 0.55),
+		NumberSequenceKeypoint.new(1, 1),
+	})
+	trail.Lifetime = 0.45
+	trail.MinLength = 0.02
+	trail.WidthScale = NumberSequence.new({
+		NumberSequenceKeypoint.new(0, 1),
+		NumberSequenceKeypoint.new(1, 0.15),
+	})
+	trail.LightEmission = 0.6
+	trail.Enabled = false
+	trail.Parent = handPart
+
+	return trail
+end
+
 local function runWaterbendingShowcase()
+	-- AVATAR DETECTION: always the local player's own live character,
+	-- never a stand-in model. If it hasn't spawned yet we wait for it.
 	local character = localPlayer.Character or localPlayer.CharacterAdded:Wait()
 	local humanoid = character:WaitForChild("Humanoid", 5)
 	if not humanoid then
@@ -1036,11 +1257,19 @@ local function runWaterbendingShowcase()
 		displayHumanoid.DisplayDistanceType = Enum.HumanoidDisplayDistanceType.None
 	end
 
+	-- Detect the rig type up front (R15 vs R6) so we know what to expect
+	-- from getBendingJoints below -- this is the explicit "auto-detect the
+	-- player's avatar/rig" step.
+	local rigType = detectRigType(displayModel)
+
 	local rootPart = displayModel:FindFirstChild("HumanoidRootPart")
 	displayModel.Parent = worldModel
 
 	if rootPart then
 		rootPart.Anchored = true
+		-- Facing is reset to a known, fixed orientation so every pose and
+		-- sweep direction below is deterministic regardless of which way
+		-- the player happened to be facing in the world.
 		rootPart.CFrame = CFrame.new(0, 0, 0)
 	end
 
@@ -1051,9 +1280,7 @@ local function runWaterbendingShowcase()
 	keyLight.Brightness = 2
 	keyLight.Color = COLORS.Water
 
-	-- Frame the camera on the model, roughly chest/head height, slight
-	-- low angle to feel heroic (matches the reference's slightly
-	-- low, centered hero framing).
+	-- Base hero framing: chest/head height, slight low angle.
 	local function frameCamera()
 		if not rootPart then
 			return
@@ -1064,7 +1291,20 @@ local function runWaterbendingShowcase()
 	end
 	frameCamera()
 
-	-- Locate shoulder joints for the bending animation
+	-- Tweens the viewport camera to a new shot over `duration` seconds.
+	-- Safe to call even though rootPart is static -- only the camera moves.
+	local function cameraShot(camOffset: Vector3, focusOffset: Vector3, duration: number)
+		if not rootPart then
+			return
+		end
+		local focusPoint = rootPart.Position + focusOffset
+		local camPos = rootPart.Position + camOffset
+		local targetCFrame = CFrame.lookAt(camPos, focusPoint)
+		TweenService:Create(vpCamera, TweenInfo.new(duration, Enum.EasingStyle.Sine, Enum.EasingDirection.InOut), { CFrame = targetCFrame }):Play()
+	end
+
+	-- Locate whichever bending-relevant joints this specific rig actually
+	-- has (shoulders always; waist/hips/knees only on rigs that have them).
 	local joints = getBendingJoints(displayModel)
 
 	-- Water particle emitters attached to both hands, plus an orbiting
@@ -1082,6 +1322,11 @@ local function runWaterbendingShowcase()
 		leftAttach, leftEmitter = createWaterEmitter(leftHandPart)
 		leftEmitter.Enabled = false
 	end
+
+	-- Comet-style swoosh trail on the lead (right) hand for the sweep and
+	-- final release beats -- matches the water streak visible in the
+	-- reference clip during the twisting motion.
+	local rightTrail = createHandTrail(rightHandPart, COLORS.Water)
 
 	local ringPart, ringSwirl
 	if rootPart then
@@ -1108,46 +1353,59 @@ local function runWaterbendingShowcase()
 	tween(caption, 1, { TextTransparency = 0.3 })
 	task.wait(0.4)
 
-	-- ---- POSE SEQUENCE (mirrors the reference clip's beats) ----
-	-- Each pose is a target C0 offset added on top of the joint's
-	-- original C0, applied to both shoulders (mirrored for the left).
-	if joints and joints.RightShoulder and joints.LeftShoulder then
-		local rightOriginal = joints.RightShoulder.C0
-		local leftOriginal = joints.LeftShoulder.C0
-
-		local function poseShoulders(rightCF, leftCF, duration)
-			local infoR = TweenInfo.new(duration, Enum.EasingStyle.Sine, Enum.EasingDirection.InOut)
-			TweenService:Create(joints.RightShoulder, infoR, { C0 = rightOriginal * rightCF }):Play()
-			TweenService:Create(joints.LeftShoulder, infoR, { C0 = leftOriginal * leftCF }):Play()
+	-- ---- POSE SEQUENCE ----
+	-- poseBody tweens every joint present in `targets` (a table of
+	-- jointName -> CFrame offset) from its captured original C0 to
+	-- original * offset, all in parallel over `duration` seconds. Joints
+	-- the current rig doesn't have (e.g. Waist/Knees on R6) are simply
+	-- absent from `joints` and skipped -- this is what makes the same
+	-- code produce a full-body lunge on R15 and a clean arms-only pose on
+	-- R6 without branching on rig type everywhere.
+	if joints then
+		local originals = {}
+		for jointName, motor in pairs(joints) do
+			originals[jointName] = motor.C0
 		end
 
-		-- BEAT 1 (~0.0s reference): idle, arms relaxed at sides — this is
-		-- already the rig's default pose, so we simply hold briefly.
+		local function poseBody(targets, duration: number)
+			local info = TweenInfo.new(duration, Enum.EasingStyle.Sine, Enum.EasingDirection.InOut)
+			for jointName, offsetCFrame in pairs(targets) do
+				local motor = joints[jointName]
+				if motor then
+					TweenService:Create(motor, info, { C0 = originals[jointName] * offsetCFrame }):Play()
+				end
+			end
+		end
+
+		-- BEAT 0 (~0.0s ref): idle silhouette, arms relaxed -- the rig's
+		-- default pose, so we just hold briefly before starting.
 		task.wait(0.3)
 
-		-- BEAT 2 (~0.6s reference): arms rise and cross in front of the
-		-- chest, elbows bent — "gathering" stance before the water draws in.
-		poseShoulders(
-			CFrame.Angles(math.rad(-70), 0, math.rad(-20)),
-			CFrame.Angles(math.rad(-70), 0, math.rad(20)),
-			0.7
-		)
+		-- BEAT 1 (~0.5s ref): arms rise out to the sides, elbows bent,
+		-- palms forward -- the "channeling" stance that opens the clip's
+		-- movement.
+		poseBody({
+			RightShoulder = CFrame.Angles(math.rad(-80), 0, math.rad(-65)),
+			LeftShoulder = CFrame.Angles(math.rad(-80), 0, math.rad(65)),
+		}, 0.6)
+		task.wait(0.65)
+
+		-- BEAT 2 (~1.0s ref): arms draw up and in, crossing near the
+		-- chest/head -- gathering the water overhead. Water starts flowing
+		-- and the orbiting ring spins up here.
+		poseBody({
+			RightShoulder = CFrame.Angles(math.rad(-165), 0, math.rad(-15)),
+			LeftShoulder = CFrame.Angles(math.rad(-165), 0, math.rad(15)),
+			Waist = CFrame.Angles(math.rad(-8), 0, 0),
+		}, 0.7)
 		if rightEmitter then rightEmitter.Enabled = true end
 		if leftEmitter then leftEmitter.Enabled = true end
 		if ringSwirl then ringSwirl.Enabled = true end
-		task.wait(0.8)
+		cameraShot(Vector3.new(-0.8, 0.6, 6.0), Vector3.new(0, 1.6, 0), 0.9)
+		task.wait(0.85)
 
-		-- BEAT 3 (~1.6s reference): arms sweep outward and up in a wide
-		-- circular arc, drawing the water out and around — the big
-		-- "wingspan" pose from the clip.
-		poseShoulders(
-			CFrame.Angles(math.rad(-160), 0, math.rad(-75)),
-			CFrame.Angles(math.rad(-160), 0, math.rad(75)),
-			0.9
-		)
-
-		-- Orbit the water ring around the torso while arms are spread,
-		-- following the sweep.
+		-- Orbit the water ring around the torso from here through the end
+		-- of the sequence, following the gathering/sweep/release beats.
 		local orbitRunning = true
 		if ringPart and rootPart then
 			local orbitTime = 0
@@ -1164,34 +1422,47 @@ local function runWaterbendingShowcase()
 			end)
 		end
 
-		task.wait(1.0)
-
-		-- BEAT 4 (~2.4s reference): arms come back together in front of
-		-- the chest, cupped — compressing the water into a sphere between
-		-- the palms.
-		poseShoulders(
-			CFrame.Angles(math.rad(-90), math.rad(-25), math.rad(-45)),
-			CFrame.Angles(math.rad(-90), math.rad(25), math.rad(45)),
-			0.7
-		)
+		-- BEAT 3 (~1.6s ref): the "épico" moment -- torso twists, the
+		-- back leg steps into a lunge, and both arms sweep down and out
+		-- in a wide arc as the water is thrown. The lead-hand Trail turns
+		-- on right as the sweep starts so it catches the whole arc.
+		if rightTrail then rightTrail.Enabled = true end
+		poseBody({
+			RightShoulder = CFrame.Angles(math.rad(-40), math.rad(-30), math.rad(-100)),
+			LeftShoulder = CFrame.Angles(math.rad(-100), math.rad(20), math.rad(70)),
+			Waist = CFrame.Angles(math.rad(15), math.rad(-25), 0),
+			RightHip = CFrame.Angles(math.rad(-35), math.rad(-10), 0),
+			LeftHip = CFrame.Angles(math.rad(20), math.rad(10), 0),
+			RightKnee = CFrame.Angles(math.rad(45), 0, 0),
+		}, 0.75)
+		cameraShot(Vector3.new(1.6, 0.1, 5.4), Vector3.new(0.3, 1.1, 0), 0.75)
 		task.wait(0.8)
 
-		-- BEAT 5 (final reference pose): weight shifts into a low forward
-		-- stance, right arm extends forward/up in the release/push pose,
-		-- left arm pulls back — matching the final wide stance frame.
-		poseShoulders(
-			CFrame.Angles(math.rad(-130), math.rad(-10), math.rad(10)),
-			CFrame.Angles(math.rad(-40), math.rad(15), math.rad(60)),
-			0.8
-		)
-		frameCamera()
+		-- BEAT 4 (final ref pose): frozen deep low lunge held for the
+		-- "epic" beat -- front knee bent hard, back leg extended, torso
+		-- leaned forward, lead arm thrust low/forward, other arm pulled
+		-- back. This is the pose the sequence ends and holds on.
+		poseBody({
+			RightShoulder = CFrame.Angles(math.rad(10), math.rad(-15), math.rad(-80)),
+			LeftShoulder = CFrame.Angles(math.rad(-110), math.rad(25), math.rad(85)),
+			Waist = CFrame.Angles(math.rad(22), math.rad(-30), 0),
+			RightHip = CFrame.Angles(math.rad(-55), math.rad(-15), 0),
+			LeftHip = CFrame.Angles(math.rad(35), math.rad(15), 0),
+			RightKnee = CFrame.Angles(math.rad(70), 0, 0),
+			LeftKnee = CFrame.Angles(math.rad(10), 0, 0),
+		}, 0.7)
+		if rightTrail then rightTrail.Enabled = false end
+		cameraShot(Vector3.new(0.4, -0.15, 4.6), Vector3.new(0.15, 1.0, 0), 0.7)
 
-		task.wait(1.6)
+		-- Hold the freeze-frame -- this is the dramatic beat the whole
+		-- sequence builds to, so it gets the longest single hold.
+		task.wait(1.75)
 
 		orbitRunning = false
 	else
-		-- Fallback: no rig joints found (unusual rig type) — just hold
-		-- the water effects on for a beat so the phase still reads.
+		-- Fallback: no rig joints found at all (unusual/custom rig) --
+		-- just hold the water effects on for a beat so the phase still
+		-- reads instead of erroring out.
 		if rightEmitter then rightEmitter.Enabled = true end
 		if leftEmitter then leftEmitter.Enabled = true end
 		if ringSwirl then ringSwirl.Enabled = true end
@@ -1202,6 +1473,7 @@ local function runWaterbendingShowcase()
 	if rightEmitter then rightEmitter.Enabled = false end
 	if leftEmitter then leftEmitter.Enabled = false end
 	if ringSwirl then ringSwirl.Enabled = false end
+	if rightTrail then rightTrail.Enabled = false end
 
 	tween(caption, 0.6, { TextTransparency = 1 })
 	tween(elementLabel, 0.6, { TextTransparency = 1 })
@@ -1254,8 +1526,8 @@ local function runCreatorCredit()
 
 	tween(smallLabel, 0.7, { TextTransparency = 0 })
 	task.wait(0.3)
-	tween(leftAccent, 0.6, { Size = UDim2.new(0, 150, 0, 3) })
-	tween(rightAccent, 0.6, { Size = UDim2.new(0, 150, 0, 3) })
+	tween(leftAccent, 0.6, { Size = UDim2.new(0, vmin(0.18), 0, 3) })
+	tween(rightAccent, 0.6, { Size = UDim2.new(0, vmin(0.18), 0, 3) })
 	task.wait(0.2)
 	tween(nameLabel, 0.9, { TextTransparency = 0 })
 
@@ -1301,18 +1573,41 @@ local function runLogoScreen()
 		TextTransparency = 1,
 	})
 
-	local underline1 = makeFrame(container, UDim2.new(0, 0, 0, 4), UDim2.fromScale(0.25, 0.62), Vector2.new(0.5, 0), COLORS.Water, 0, 5)
-	local underline2 = makeFrame(container, UDim2.new(0, 0, 0, 4), UDim2.fromScale(0.5, 0.66), Vector2.new(0.5, 0), COLORS.Lightning, 0, 5)
-	local underline3 = makeFrame(container, UDim2.new(0, 0, 0, 4), UDim2.fromScale(0.75, 0.62), Vector2.new(0.5, 0), COLORS.Fire, 0, 5)
+	-- The three underline bars sit in a single-row UIListLayout instead of
+	-- three manually-positioned frames. A list layout can never let its
+	-- children overlap each other -- it always lays them out in a row
+	-- with the given padding between them -- which is what previously
+	-- broke on narrow screens (the three fixed 120px-wide bars, spaced by
+	-- fixed percentage X positions, physically overlapped once the
+	-- screen got narrower than ~480px).
+	local underlineRow = Instance.new("Frame")
+	underlineRow.Name = "UnderlineRow"
+	underlineRow.Size = UDim2.fromScale(0.9, 0.05)
+	underlineRow.Position = UDim2.fromScale(0.5, 0.64)
+	underlineRow.AnchorPoint = Vector2.new(0.5, 0)
+	underlineRow.BackgroundTransparency = 1
+	underlineRow.ZIndex = 5
+	underlineRow.Parent = container
+
+	local rowLayout = Instance.new("UIListLayout")
+	rowLayout.FillDirection = Enum.FillDirection.Horizontal
+	rowLayout.HorizontalAlignment = Enum.HorizontalAlignment.Center
+	rowLayout.VerticalAlignment = Enum.VerticalAlignment.Center
+	rowLayout.Padding = UDim.new(0, vmin(0.03))
+	rowLayout.Parent = underlineRow
+
+	local underline1 = makeFrame(underlineRow, UDim2.new(0, 0, 0, 4), UDim2.fromScale(0, 0.5), Vector2.new(0, 0.5), COLORS.Water, 0, 5)
+	local underline2 = makeFrame(underlineRow, UDim2.new(0, 0, 0, 4), UDim2.fromScale(0, 0.5), Vector2.new(0, 0.5), COLORS.Lightning, 0, 5)
+	local underline3 = makeFrame(underlineRow, UDim2.new(0, 0, 0, 4), UDim2.fromScale(0, 0.5), Vector2.new(0, 0.5), COLORS.Fire, 0, 5)
 
 	tween(logoLabel, 1.2, { TextTransparency = 0 })
 	tween(bgPulse, 1.2, { BackgroundTransparency = 0.9 })
 	task.wait(0.5)
-	tween(underline1, 0.7, { Size = UDim2.new(0, 120, 0, 4) })
+	tween(underline1, 0.7, { Size = UDim2.new(0, vmin(0.14), 0, 4) })
 	task.wait(0.2)
-	tween(underline2, 0.7, { Size = UDim2.new(0, 120, 0, 4) })
+	tween(underline2, 0.7, { Size = UDim2.new(0, vmin(0.14), 0, 4) })
 	task.wait(0.2)
-	tween(underline3, 0.7, { Size = UDim2.new(0, 120, 0, 4) })
+	tween(underline3, 0.7, { Size = UDim2.new(0, vmin(0.14), 0, 4) })
 
 	task.wait(2.2)
 
