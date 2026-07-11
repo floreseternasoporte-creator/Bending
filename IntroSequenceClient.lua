@@ -47,6 +47,25 @@
 	  (channel stance -> gather overhead -> twisting sweep into a lunge ->
 	  frozen low-lunge release), a comet-style water Trail on the lead
 	  hand during the sweep, and cinematic camera moves for each beat.
+
+	v5 CHANGELOG (fixes the "everything after EARTH goes black / creator
+	credit is gone" report):
+	- Root cause of the black screen: a ViewportFrame renders its OWN
+	  isolated 3D scene and does NOT inherit the game's Lighting service.
+	  Ambient/LightColor default to pure black, so the cloned avatar was
+	  rendering as a black silhouette on the black backdrop -- invisible,
+	  not broken. Now sets Viewport.Ambient/LightColor/LightDirection
+	  explicitly so the avatar is actually lit and visible.
+	- Hardened the character lookup: it used to block on
+	  `CharacterAdded:Wait()`, which hangs forever if the character had
+	  already spawned before that line ran -- silently freezing the
+	  entire rest of the intro (creator credit + logo included). Now
+	  bounded to an 8s max wait.
+	- The whole waterbending showcase body now runs inside `pcall`, and
+	  every phase in the master sequence (welcome/loading/elements/
+	  waterbending/credit/logo) is run through a `runPhase` wrapper that
+	  pcalls it and logs+continues on error, so one broken phase can
+	  never again take the rest of the intro down with it.
 ]]
 
 local Players = game:GetService("Players")
@@ -1182,14 +1201,45 @@ end
 
 local function runWaterbendingShowcase()
 	-- AVATAR DETECTION: always the local player's own live character,
-	-- never a stand-in model. If it hasn't spawned yet we wait for it.
-	local character = localPlayer.Character or localPlayer.CharacterAdded:Wait()
+	-- never a stand-in model. If it hasn't spawned yet we wait for it,
+	-- but with a hard timeout -- `CharacterAdded:Wait()` would hang
+	-- forever if the character had already spawned (and the event
+	-- already fired) before this line ran, which would silently freeze
+	-- the ENTIRE rest of the intro (credit + logo screens included).
+	local character = localPlayer.Character
+	if not character then
+		local waited = 0
+		local conn
+		conn = localPlayer.CharacterAdded:Connect(function(newCharacter)
+			character = newCharacter
+		end)
+		while not character and waited < 8 do
+			task.wait(0.1)
+			waited += 0.1
+		end
+		if conn then
+			conn:Disconnect()
+		end
+	end
+	if not character then
+		return -- safety: skip this phase if we truly can't find a character
+	end
 	local humanoid = character:WaitForChild("Humanoid", 5)
 	if not humanoid then
 		return -- safety: skip this phase if we truly can't find a character
 	end
 
-	local container = Instance.new("Frame")
+	-- The whole showcase body runs inside pcall: this is a lot of
+	-- Instance/Viewport/joint code touching the player's live avatar, and
+	-- if any single call on it errors (an unusual rig, a stripped part,
+	-- etc.) it must NOT take down the rest of the intro sequence with it.
+	-- `container` and `displayModel` are declared out here so cleanup
+	-- below always runs, whether the phase finished normally or errored.
+	local container: Frame? = nil
+	local displayModel: Model? = nil
+
+	local ok, err = pcall(function()
+	container = Instance.new("Frame")
 	container.Name = "WaterbendingShowcase"
 	container.Size = UDim2.fromScale(1, 1)
 	container.BackgroundTransparency = 1
@@ -1236,12 +1286,24 @@ local function runWaterbendingShowcase()
 	viewport.CurrentCamera = vpCamera
 	vpCamera.Parent = viewport
 
+	-- A ViewportFrame renders its own isolated little 3D scene -- it does
+	-- NOT inherit the game's Lighting service settings. Left unset,
+	-- Ambient/LightColor both default to pure black, so the avatar would
+	-- render as a solid black silhouette (indistinguishable from the
+	-- black backdrop behind it) no matter how well-lit the pose or
+	-- particles are. This is what was actually causing the "black
+	-- screen" -- the showcase WAS running, it just had no light to see
+	-- it by.
+	viewport.Ambient = Color3.fromRGB(130, 135, 145)
+	viewport.LightColor = Color3.fromRGB(255, 250, 240)
+	viewport.LightDirection = Vector3.new(-0.4, -1, -0.3)
+
 	local worldModel = Instance.new("WorldModel")
 	worldModel.Parent = viewport
 
 	-- Clone the player's actual character for display; the live character
 	-- stays untouched so the player isn't frozen/edited during the intro.
-	local displayModel = character:Clone()
+	displayModel = character:Clone()
 	displayModel.Name = "AvatarDisplay"
 
 	-- Strip scripts from the clone so nothing (movement, tools, etc.) runs
@@ -1480,9 +1542,22 @@ local function runWaterbendingShowcase()
 	tween(glow, 0.6, { BackgroundTransparency = 1 })
 
 	task.wait(0.65)
+	end) -- end pcall
 
-	displayModel:Destroy()
-	container:Destroy()
+	if not ok then
+		warn("[IntroSequenceClient] Waterbending showcase hit an error and was skipped:", err)
+	end
+
+	-- Cleanup always runs, whether the showcase finished cleanly or hit
+	-- an error partway through -- this guarantees the rest of the intro
+	-- (creator credit, logo) is never left blocked behind a broken
+	-- WATER showcase.
+	if displayModel then
+		displayModel:Destroy()
+	end
+	if container then
+		container:Destroy()
+	end
 end
 
 -- ============================================================
@@ -1625,15 +1700,26 @@ end
 -- MASTER SEQUENCE
 -- ============================================================
 
+-- Runs a single phase inside pcall so that if it errors, the phase's own
+-- content just gets skipped instead of taking every phase after it down
+-- with it (this is what let a single broken phase silently swallow the
+-- creator credit and logo screens that come after it).
+local function runPhase(name: string, phaseFn, ...)
+	local ok, err = pcall(phaseFn, ...)
+	if not ok then
+		warn(("[IntroSequenceClient] Phase '%s' hit an error and was skipped: %s"):format(name, tostring(err)))
+	end
+end
+
 local function runFullSequence()
 	local skipBindable = Instance.new("BindableEvent")
 
-	runWelcomeScreen()
-	runLoadingScreen(skipBindable)
-	runElementsIntro()
-	runWaterbendingShowcase()
-	runCreatorCredit()
-	runLogoScreen()
+	runPhase("Welcome", runWelcomeScreen)
+	runPhase("Loading", runLoadingScreen, skipBindable)
+	runPhase("ElementsIntro", runElementsIntro)
+	runPhase("WaterbendingShowcase", runWaterbendingShowcase)
+	runPhase("CreatorCredit", runCreatorCredit)
+	runPhase("LogoScreen", runLogoScreen)
 
 	skipBindable:Destroy()
 

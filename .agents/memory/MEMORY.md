@@ -1,0 +1,1 @@
+- [ViewportFrame lighting & phase isolation](roblox-viewportframe-lighting.md) — ViewportFrame needs explicit Ambient/LightColor or avatars render black; isolate sequential phases with pcall + bounded waits.
